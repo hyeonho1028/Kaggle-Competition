@@ -1,0 +1,119 @@
+---
+title: "modeling_02"
+author: "Hyeonho Lee"
+date: "2018년 9월 29일"
+output: html_document
+---
+
+```{r}
+submit <- . %>% 
+  as_tibble() %>% 
+  set_names("y") %>% 
+  mutate(y = ifelse(y < 0, 0, expm1(y))) %>% 
+  bind_cols(id) %>% 
+  group_by(fullVisitorId) %>% 
+  summarise(y = log1p(sum(y))) %>% 
+  right_join(
+    read_csv("D:/kaggle_compitition/all/sample_submission.csv"), 
+    by = "fullVisitorId") %>% 
+  mutate(PredictedLogRevenue = round(y, 5)) %>% 
+  select(-y) %>% 
+  write_csv(sub)
+```
+
+```{r}
+tr_te_ohe <- tr_te %>% 
+  mutate_if(is.factor, fct_lump, prop = 0.025) %>%
+  mutate_if(is.numeric, funs(ifelse(is.na(.), 0L, .))) %>% 
+  mutate_if(is.factor, fct_explicit_na) %>%
+  select(-adwordsClickInfo.isVideoAd) %>%
+  model.matrix(~.-1, .) %>% 
+  scale() %>% 
+  round(4)
+
+X <- tr_te_ohe[tri, ]
+X_test <- tr_te_ohe[-tri, ]
+rm(tr_te_ohe); invisible(gc())
+```
+
+Keras
+```{r}
+set.seed(0)
+m_nn <- keras_model_sequential()
+m_nn %>% 
+  layer_dense(units = 256, activation = "relu", input_shape = ncol(X)) %>% 
+  layer_dropout(rate = 0.1) %>% 
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.01) %>%
+  layer_dense(units = 1, activation = "linear")
+
+m_nn %>% compile(loss = "mean_squared_error",
+                 metrics = custom_metric("rmse", function(y_true, y_pred) 
+                   k_sqrt(metric_mean_squared_error(y_true, y_pred))),
+                 optimizer = optimizer_adadelta())
+
+history <- m_nn %>% 
+  fit(X, log1p(y), 
+      epochs = 20, 
+      batch_size = 128, 
+      verbose = 0,
+      validation_split = 0.1,
+      callbacks = callback_early_stopping(patience = 5))
+
+pred_nn_tr <- predict(m_nn, X) %>% c()
+pred_nn <- predict(m_nn, X_test) %>% c()
+sub <- "keras_gs.csv"
+submit(pred_nn)
+```
+
+XGB
+```{r}
+library(xgboost)
+# tr_te_xgb <- tr_te %>% 
+#   mutate_if(is.factor, as.integer)
+# 
+# dtest <- xgb.DMatrix(data = data.matrix(tr_te_xgb[-tri, ]))
+# tr_te_xgb <- tr_te_xgb[tri, ]
+# idx <- ymd(tr$date) < ymd("20170701")
+# dtr <- xgb.DMatrix(data = data.matrix(tr_te_xgb[idx, ]), label = log1p(y[idx]))
+# dval <- xgb.DMatrix(data = data.matrix(tr_te_xgb[!idx, ]), label = log1p(y[!idx]))
+# dtrain <- xgb.DMatrix(data = data.matrix(tr_te_xgb), label = log1p(y))
+
+tr_te_xgb <- tr_te %>% mutate_if(is.factor, as.integer)
+tr_te_xgb = tr_te_xgb[,-c(31:34)]
+
+dtest <- xgb.DMatrix(data = data.matrix(tr_te_xgb[-tri, ]))
+tr_te_xgb <- tr_te_xgb[tri, ]
+
+set.seed(0)
+idx = sample(nrow(tr_te_xgb), 880000, replace = F)
+dtr <- xgb.DMatrix(data = data.matrix(tr_te_xgb[idx, ]), label = log1p(y[idx]))
+dval <- xgb.DMatrix(data = data.matrix(tr_te_xgb[-idx, ]), label = log1p(y[-idx]))
+dtrain <- xgb.DMatrix(data = data.matrix(tr_te_xgb), label = log1p(y))
+cols <- colnames(tr_te_xgb)
+rm(tr_te_xgb); invisible(gc)
+
+p <- list(objective = "reg:linear",
+          booster = "gbtree",
+          eval_metric = "rmse",
+          nthread = 4,
+          eta = 0.01,
+          max_depth = 8,
+          min_child_weight = 4,
+          gamma = 0.1,
+          subsample = 0.9,
+          colsample_bytree = 0.5,
+          nrounds = 3000)
+
+set.seed(0)
+m_xgb <- xgb.train(p, dtr, p$nrounds, list(val = dval), print_every_n = 100, early_stopping_rounds = 100)
+
+pred_xgb_tr <- predict(m_xgb, dtrain)
+pred_xgb <- predict(m_xgb, dtest) 
+sub <- "xgb_gs2.csv"
+submit(pred_xgb)
+```
+
+
+
+

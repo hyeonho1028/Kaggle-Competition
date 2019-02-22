@@ -1,0 +1,210 @@
+---
+title: "modeling_03"
+author: "Hyeonho Lee"
+date: "2018년 10월 1일"
+output: html_document
+---
+
+
+```{r}
+# Borrowed most of the codes from @kxx XGBOOST
+library(tidyverse)
+library(magrittr)
+library(jsonlite)
+library(caret)
+library(lubridate)
+library(catboost)
+library(CatEncoders)
+library(ggplot2)
+
+
+set.seed(0)
+
+cat("Loading data...\n")
+setwd("D:/kaggle_compitition/all")
+tr = read_csv("train.csv")
+te = read_csv("test.csv") 
+
+#---------------------------
+cat("Defining auxiliary functions...\n")
+
+flatten_json <- . %>% 
+  str_c(., collapse = ",") %>% 
+  str_c("[", ., "]") %>% 
+  fromJSON(flatten = T)
+
+parse <- . %>% 
+  bind_cols(flatten_json(.$device)) %>%
+  bind_cols(flatten_json(.$geoNetwork)) %>% 
+  bind_cols(flatten_json(.$trafficSource)) %>% 
+  bind_cols(flatten_json(.$totals)) %>% 
+  select(-device, -geoNetwork, -trafficSource, -totals)
+#---------------------------
+cat("Preprocessing1...\n")
+
+id <- te[, "fullVisitorId"]
+tri <- 1:nrow(tr)
+
+#---------------------------
+cat("Basic preprocessing...\n")
+
+tr <- parse(tr)
+te <- parse(te)
+
+tr_te <- tr %>% 
+  bind_rows(te) %>% 
+  bind_cols(map_dfr(.$device, fromJSON)) %>%
+  bind_cols(map_dfr(.$geoNetwork, fromJSON))  %>% 
+  bind_cols(map_dfr(.$trafficSource, ~ fromJSON(.x) %>% unlist %>% as.list)) %>% 
+  bind_cols(map_dfr(.$totals, fromJSON)) %>% 
+  mutate(
+        date = ymd(date),
+        transactionRevenue = as.numeric(transactionRevenue),
+        bounces = as.factor(ifelse(is.na(bounces), 0, bounces)), 
+        hits = log1p(as.integer(hits)),
+        pageviews = ifelse(is.na(pageviews), 0L, log1p(as.integer(pageviews))),
+        visitNumber =  as.factor(visitNumber)) %>%      
+  mutate(transactionRevenue = ifelse(is.na(transactionRevenue), 0, transactionRevenue)) %>% 
+  select(-adwordsClickInfo.criteriaParameters,-visitStartTime,-visitId,-campaignCode,-isMobile,                       
+         -socialEngagementType,-fullVisitorId,-browserSize,-browserVersion,-referralPath,
+         -language,-flashVersion,-mobileDeviceBranding,-mobileDeviceInfo,-mobileDeviceMarketingName,
+         -mobileDeviceModel,-mobileInputSelector,-operatingSystemVersion,-screenColors,-screenResolution,
+         -cityId,-latitude,-longitude,-networkLocation,-newVisits,-adwordsClickInfo.adNetworkType,-adContent,
+         -adwordsClickInfo.page,-adwordsClickInfo.slot,-adwordsClickInfo.gclId,-adwordsClickInfo.isVideoAd,-isTrueDirect,-sessionId) %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer)) %>% 
+  glimpse()
+
+
+glimpse(tr_te)
+```  
+
+
+```{r}
+fn <- funs(mean, var, .args = list(na.rm = TRUE))
+
+sum_by_dom <- tr_te %>%
+  select(networkDomain, hits, pageviews) %>% 
+  group_by(networkDomain) %>% 
+  summarise_all(fn) 
+
+sum_by_vn <- tr_te %>%
+  select(visitNumber, hits, pageviews) %>% 
+  group_by(visitNumber) %>% 
+  summarise_all(fn) 
+
+sum_by_country <- tr_te %>%
+  select(country, hits, pageviews) %>% 
+  group_by(country) %>% 
+  summarise_all(fn) 
+
+sum_by_city <- tr_te %>%
+  select(city, hits, pageviews) %>% 
+  group_by(city) %>% 
+  summarise_all(fn) 
+
+sum_by_medium <- tr_te %>%
+  select(medium, hits, pageviews) %>% 
+  group_by(medium) %>% 
+  summarise_all(fn) 
+
+sum_by_source <- tr_te %>%
+  select(source, hits, pageviews) %>% 
+  group_by(source) %>% 
+  summarise_all(fn) 
+
+  
+tr_te %<>% 
+  left_join(sum_by_city, by = "city", suffix = c("", "_city")) %>% 
+  left_join(sum_by_country, by = "country", suffix = c("", "_country")) %>% 
+  left_join(sum_by_dom, by = "networkDomain", suffix = c("", "_dom")) %>% 
+  left_join(sum_by_medium, by = "medium", suffix = c("", "medium")) %>% 
+  left_join(sum_by_source, by = "source", suffix = c("", "_source")) %>% 
+  left_join(sum_by_vn, by = "visitNumber", suffix = c("", "_vn")) %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer)) 
+ 
+y <- log1p(tr_te$transactionRevenue[tri])
+tr_te$transactionRevenue <- NULL
+
+
+dtest_pool <- catboost.load_pool(data = tr_te[-tri, !(colnames(tr_te) %in% c("date","transactionRevenue"))])
+tr_te <- tr_te[tri, !(colnames(tr_te) %in% c("date","transactionRevenue"))]
+tri <- createDataPartition(y, p = 0.9, list = F) %>% c()
+
+train_pool <- catboost.load_pool(data = tr_te[tri,], label = y[tri])
+dval_pool <- catboost.load_pool(data = tr_te[-tri,], label = y[-tri])
+
+# build model
+# params <- list(iterations=10000,
+#                learning_rate=0.01,
+#                depth=10,
+#                loss_function='RMSE',
+#                eval_metric='RMSE',
+#                random_seed = 0,
+#                bagging_temperature = 0.6,
+#                random_strength = 0.6 ,
+#                od_type='Iter',
+#                od_wait=150,
+#                metric_period = 300,
+#                use_best_model=TRUE)
+
+params <- list(iterations=10000,
+               learning_rate=0.001,
+               depth=10,
+               loss_function='RMSE',
+               eval_metric='RMSE',
+               random_seed = 0,
+               bagging_temperature = 0.7,
+               random_strength = 0.7,
+               od_type='Iter',
+               od_pval=0.0001,
+               od_wait=150,
+               metric_period = 300,
+               use_best_model=TRUE)
+
+model <- catboost.train(train_pool, dval_pool, params)
+
+rm(train_pool,dval_pool)
+# rm(tr, te, tr_te, tri)
+# gc()
+
+#---------------------------
+cat("Making predictions...\n")
+
+ 
+pred1 <- catboost.predict(model, dtest_pool) %>% 
+  as_tibble() %>% 
+  set_names("y1") %>% 
+  mutate(y1 = expm1(y1)) %>% 
+  mutate(y1 = ifelse(y1 < 0, 0, y1)) %>% 
+  bind_cols(id) %>% 
+  group_by(fullVisitorId) %>% 
+  summarise(y1 = sum(y1))
+  
+ 
+  pred1$y1 <- log1p(pred1$y1) 
+ 
+#---------------------------
+cat("Making submission file...\n")
+
+read_csv("D:/kaggle_compitition/all/sample_submission.csv") %>%  
+  left_join(pred1, by = "fullVisitorId") %>% 
+  mutate(PredictedLogRevenue = round(y1,5)) %>% 
+  select(-y1) %>% 
+  write_csv("Catboost_output.csv")
+```
+
+```{r}
+a = read_csv("D:/kaggle_compitition/all/sample_submission.csv")
+b = read_csv("D:/kaggle_compitition/all/ave_xgb,cat.csv")
+
+write_csv(a,"ave_xgb,cat2.csv")
+```
+
+
+
+
+
+
+
+
+

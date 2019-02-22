@@ -1,0 +1,197 @@
+---
+title: "eda_04"
+author: "Hyeonho Lee"
+date: "2018년 9월 29일"
+output: html_document
+---
+
+```{r}
+setwd("D:/kaggle_compitition/all")
+tr = read_csv("train.csv")
+te = read_csv("test.csv")
+
+
+flatten_json <- . %>% 
+  str_c(., collapse = ",") %>% 
+  str_c("[", ., "]") %>% 
+  fromJSON(flatten = T)
+
+parse <- . %>%
+  bind_cols(flatten_json(.$device)) %>%
+  bind_cols(flatten_json(.$geoNetwork)) %>%
+  bind_cols(flatten_json(.$trafficSource)) %>%
+  bind_cols(flatten_json(.$totals)) %>%
+  select(-device, -geoNetwork, -trafficSource, -totals)
+
+library(jsonlite)
+tr <- parse(tr)
+te <- parse(te)
+```
+
+test data에는 없는 컬럼은 train data에서 제거할 필요성이 있음
+```{r}
+setdiff(names(tr), names(te))
+```
+
+transactionRevenue 의 경우 prediction 대상이므로 따로 처리하고 campaignCode만 제거
+```{r}
+tr %<>% select(-one_of("campaignCode"))
+```
+
+모든 row가 동일하며, 결측값이 없는 column제거
+```{r}
+overlap_column = names(tr)[tr %>% sapply(function(x) {length(unique(x))}) == 1]
+not_na_column = names(tr)[colSums(is.na(tr)) == 0]
+
+intersect_column = intersect(overlap_column, not_na_column)
+
+tr %<>% select(-one_of(intersect_column))
+te %<>% select(-one_of(intersect_column))
+```
+
+parsing & basic preprocessing
+```{r}
+setwd("D:/kaggle_compitition/all/data")
+write.csv(tr, 'train.csv', row.names = F)
+write.csv(te, 'test.csv', row.names = F)
+rm(list=ls())
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+```
+
+parsing한 데이터 read
+```{r}
+setwd("D:/kaggle_compitition/all/data")
+tr = read_csv("train.csv")
+te = read_csv("test.csv")
+```
+
+missing data visualization & unique column count 
+```{r}
+data.table::data.table(
+  missing = sapply(tr, function(x) { (sum(is.na(x)) / length(x)) }),
+  column = names(tr)
+  ) %>% 
+  ggplot(aes(x = reorder(column, -missing), y = missing)) + 
+  geom_bar(stat = 'identity', fill = 'steelblue') + 
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(
+    title='Missing data by feature',
+    x='Feature',
+    y='% missing')
+```
+
+train data exploration
+```{r}
+tr$channelGrouping %>% as.tibble() %>% 
+  within(value <- factor(value, levels=names(sort(table(value), decreasing=TRUE)))) %>% 
+  ggplot(aes(x=value, y=..count..)) + 
+  geom_bar(fill='steelblue') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+date column n & sum(revenue)
+```{r}
+glimpse(tr)
+
+
+tr$date %<>% as.character() %>% as.Date(format='%Y%m%d')
+ta = data.table::data.table(tr)
+
+g1 <- ta[, .(n = .N), by=date] %>%
+  ggplot(aes(x=date, y=n)) + 
+  geom_line(color='steelblue') +
+  geom_smooth(color='orange') + 
+  labs(
+    x='',
+    y='Visits (000s)',
+    title='Daily visits'
+  )
+
+g2 <- ta[, .(revenue = sum(transactionRevenue, na.rm=TRUE)), by=date] %>%
+  ggplot(aes(x=date, y=revenue)) + 
+  geom_line(color='steelblue') +
+  geom_smooth(color='orange') + 
+  labs(
+    x='',
+    y='Revenue (unit dollars)',
+    title='Daily transaction revenue'
+  )
+
+gridExtra::grid.arrange(g1, g2, nrow=2)
+rm(ta)
+```
+
+fullVisitorId
+```{r}
+range(tr$date)
+
+```
+
+sessionId
+```{r}
+
+```
+
+visitId
+```{r}
+
+```
+
+visitNumber
+```{r}
+
+```
+
+
+```{r}
+tr$transactionRevenue %<>% as.numeric()
+tr$transactionRevenue[is.na(tr$transactionRevenue)] = 0
+
+y <- tr$transactionRevenue
+tr$transactionRevenue = NULL
+
+is_na_val <- function(x) x %in% c("not available in demo dataset", "(not provided)",
+                                  "(not set)", "<NA>", "unknown.unknown",  "(none)")
+
+
+tr %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+te %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+
+grp_mean <- function(x, grp) ave(x, grp, FUN = function(x) mean(x, na.rm = TRUE))
+
+
+id <- te[, "fullVisitorId"]
+tri <- 1:nrow(tr)
+
+tr_te <- tr %>% 
+  bind_rows(te) %>%
+  mutate(date = ymd(date),
+         year = year(date) %>% factor(),
+         month = year(date) %>% factor(),
+         week = week(date) %>% factor(),
+         day = day(date) %>% factor(),
+         hits = as.integer(hits),
+         pageviews = as.integer(pageviews),
+         bounces = as.integer(bounces),
+         newVisits = as.integer(newVisits),
+         isMobile = ifelse(isMobile, 1L, 0L),
+         isTrueDirect = ifelse(isTrueDirect, 1L, 0L),
+         adwordsClickInfo.isVideoAd = ifelse(!adwordsClickInfo.isVideoAd, 0L, 1L)) %>% 
+  select(-date, -fullVisitorId, -visitId, -sessionId) %>% 
+  mutate_if(is.character, factor) %>% 
+  mutate(pageviews_mean_vn = grp_mean(pageviews, visitNumber),
+         hits_mean_vn = grp_mean(hits, visitNumber),
+         pageviews_mean_country = grp_mean(pageviews, country),
+         hits_mean_country = grp_mean(hits, country),
+         pageviews_mean_city = grp_mean(pageviews, city),
+         hits_mean_city = grp_mean(hits, city)) 
+
+glimpse(tr)
+```
+

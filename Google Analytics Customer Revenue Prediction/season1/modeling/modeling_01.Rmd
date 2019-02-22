@@ -1,0 +1,327 @@
+---
+title: "modeling_01"
+author: "Hyeonho Lee"
+date: "2018년 9월 28일"
+output: html_document
+---
+
+
+
+tr에서 X와 y분리해야함
+```{r}
+y <- tr$transactionRevenue
+tr$transactionRevenue <- NULL
+# glimpse(tr)
+```
+
+```{r}
+m <- tr %>% 
+  mutate(date = ymd(date),
+         year = year(date),
+         month = month(date),
+         day = day(date),
+         hits = as.numeric(hits),
+         pageviews = as.numeric(pageviews),
+         bounces = as.numeric(bounces),
+         newVisits = as.numeric(newVisits),
+         isMobile = ifelse(isMobile, 1L, 0L), 
+         # isTrueDirect = ifelse(isMobile, 1L, 0L)) %>% 
+         isTrueDirect = ifelse(isTrueDirect, 1L, 0L)) %>% 
+  mutate_all(funs(ifelse(is.na(.), 0, .))) %>% 
+  select(-date, -fullVisitorId, -visitId, -sessionId) %>% 
+  mutate_if(is.character, factor) %>% 
+  mutate_if(is.factor, fct_lump, prop = 0.01) %>% 
+  model.matrix(~ . - 1, .) %>% 
+  cor(y) %>% 
+  data.table::as.data.table(keep.rownames=TRUE) %>% 
+  set_names("Feature", "rho") %>% 
+  arrange(-rho)
+
+m %>% 
+  ggplot(aes(x = rho)) +
+  geom_histogram(bins = 50, fill="steelblue") + 
+  labs(x = "correlation") +
+  theme_minimal()
+```
+
+```{r}
+m %>% 
+  filter(rho > 0.1) %>% 
+  kable()
+```
+
+```{r}
+grp_mean <- function(x, grp) ave(x, grp, FUN = function(x) mean(x, na.rm = TRUE))
+
+
+# id <- te[, "fullVisitorId"]
+# tri <- 1:nrow(tr)
+
+tr_te <- tr %>% 
+  # bind_rows(te) %>% 
+  mutate(date = ymd(date),
+         year = year(date) %>% factor(),
+         month = year(date) %>% factor(),
+         week = week(date) %>% factor(),
+         day = day(date) %>% factor(),
+         hits = as.integer(hits),
+         pageviews = as.integer(pageviews),
+         bounces = as.integer(bounces),
+         newVisits = as.integer(newVisits),
+         isMobile = ifelse(isMobile, 1L, 0L),
+         isTrueDirect = ifelse(isTrueDirect, 1L, 0L),
+         adwordsClickInfo.isVideoAd = ifelse(!adwordsClickInfo.isVideoAd, 0L, 1L)) %>% 
+  select(-date, -fullVisitorId, -visitId, -sessionId) %>% 
+  mutate_if(is.character, factor) %>% 
+  mutate(pageviews_mean_vn = grp_mean(pageviews, visitNumber),
+         hits_mean_vn = grp_mean(hits, visitNumber),
+         pageviews_mean_country = grp_mean(pageviews, country),
+         hits_mean_country = grp_mean(hits, country),
+         pageviews_mean_city = grp_mean(pageviews, city),
+         hits_mean_city = grp_mean(hits, city)) %T>% 
+  glimpse()
+```
+
+```{r}
+submit <- . %>% 
+  as_tibble() %>% 
+  set_names("y") %>% 
+  mutate(y = ifelse(y < 0, 0, expm1(y))) %>% 
+  bind_cols(id) %>% 
+  group_by(fullVisitorId) %>% 
+  summarise(y = log1p(sum(y))) %>% 
+  right_join(
+    read_csv("D:/kaggle_compitition/all/sample_submission.csv"), 
+    by = "fullVisitorId") %>% 
+  mutate(PredictedLogRevenue = round(y, 5)) %>% 
+  select(-y) %>% 
+  write_csv(sub)
+```
+
+glmnet
+```{r}
+set.seed(0)
+tri <- sample(nrow(tr_te), nrow(tr_te)*0.9, replace = F)
+
+tr_te_ohe <- tr_te %>% 
+  mutate_if(is.factor, fct_lump, prop = 0.025) %>%
+  mutate_if(is.numeric, funs(ifelse(is.na(.), 0L, .))) %>% 
+  mutate_if(is.factor, fct_explicit_na) %>%
+  select(-adwordsClickInfo.isVideoAd) %>%
+  model.matrix(~.-1, .) %>% 
+  scale() %>% 
+  round(4)
+
+X <- tr_te_ohe[tri, ]
+X_test <- tr_te_ohe[-tri, ]
+rm(tr_te_ohe); invisible(gc())
+```
+
+```{r}
+m_glm <- cv.glmnet(X, log1p(y), alpha = 0, family="gaussian", 
+                   type.measure = "mse", nfolds = 7)
+```
+
+```{r}
+pred_glm_tr <- predict(m_glm, X, s = "lambda.min") %>% c()
+pred_glm <- predict(m_glm, X_test, s = "lambda.min") %>% c()
+sub <- "glmnet_gs.csv"
+submit(pred_glm)
+```
+
+```{r}
+m_glm <- cv.glmnet(X, log1p(y[tri]), alpha = 0, family="gaussian", 
+                   type.measure = "mse", nfolds = 7)
+pred_glm_tr <- predict(m_glm, X_test, s = "lambda.min") %>% c()
+pred_glm_tr[pred_glm_tr<0]=0
+sqrt(mean((log1p(y[-tri])-pred_glm_tr)^2))
+```
+
+```{r}
+
+
+fitControl <- trainControl(method = "cv", number = 5)
+glmnet_fit <- train(X, log1p(y[tri]), method = "gbm", trControl = fitControl, verbose = F)
+
+names(getModelInfo())
+
+
+
+
+
+```
+
+Keras
+```{r}
+set.seed(0)
+m_nn <- keras_model_sequential()
+m_nn %>% 
+  layer_dense(units = 512, activation = "relu", input_shape = ncol(X)) %>% 
+  layer_dropout(rate = 0.1) %>% 
+  layer_dense(units = 512, activation = "relu") %>%
+  layer_dropout(rate = 0.01) %>%
+  layer_dense(units = 1, activation = "linear")
+
+m_nn %>% compile(loss = "mean_squared_error",
+                 metrics = custom_metric("rmse", function(y_true, y_pred) 
+                   k_sqrt(metric_mean_squared_error(y_true, y_pred))),
+                 optimizer = optimizer_adadelta())
+
+history <- m_nn %>% 
+  fit(X, log1p(y[tri]), 
+      epochs = 20, 
+      batch_size = 128, 
+      verbose = 1,
+      validation_split = 0.1,
+      callbacks = callback_early_stopping(patience = 5))
+
+pred_nn <- predict(m_nn, X_test) %>% c()
+pred_nn[pred_nn<0]=0
+sqrt(mean((log1p(y[-tri])-pred_nn)^2))
+```
+
+```{r}
+set.seed(0)
+m_nn <- keras_model_sequential()
+m_nn %>% 
+  layer_dense(units = 512, activation = "relu", input_shape = ncol(X)) %>% 
+  layer_dropout(rate = 0.1) %>% 
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.01) %>%
+  layer_dense(units = 1, activation = "linear")
+
+m_nn %>% compile(loss = "mean_squared_error",
+                 metrics = custom_metric("rmse", function(y_true, y_pred) 
+                   k_sqrt(metric_mean_squared_error(y_true, y_pred))),
+                 optimizer = optimizer_adadelta())
+
+history <- m_nn %>% 
+  fit(X, log1p(y[tri]), 
+      epochs = 10, 
+      batch_size = 128, 
+      verbose = 1,
+      validation_split = 0.1,
+      callbacks = callback_early_stopping(patience = 5))
+
+pred_nn <- predict(m_nn, X_test) %>% c()
+pred_nn[pred_nn<0]=0
+sqrt(mean((log1p(y[-tri])-pred_nn)^2))
+```
+
+```{r}
+m_nn %>%
+    layer_lstm(units            = 128, 
+               input_shape      = c(ncol(X), 1), 
+               batch_size       = 16,
+               return_sequences = TRUE, 
+               stateful         = TRUE) %>% 
+    layer_lstm(units            = 64, 
+               return_sequences = FALSE, 
+               stateful         = TRUE) %>% 
+    layer_dense(units = 1)
+
+m_nn %>% 
+    compile(loss = 'mean_squared_error', metrics = custom_metric("rmse", function(y_true, y_pred) 
+                   k_sqrt(metric_mean_squared_error(y_true, y_pred))),optimizer = optimizer_adadelta())
+
+for (i in 1:epochs) {
+            model %>% fit(x          = x_train_arr, 
+                          y          = y_train_arr, 
+                          batch_size = batch_size,
+                          epochs     = 1, 
+                          verbose    = 1, 
+                          shuffle    = FALSE)
+            
+            model %>% reset_states()
+            cat("Epoch: ", i)
+        }
+
+```
+
+```{r}
+# Plot the model loss
+plot(history$metrics$loss, main="Model Loss", xlab = "epoch", ylab="loss", col="blue", type="l", ylim = c(2.7,3.050))
+lines(history$metrics$val_loss, col="green")
+legend("topright", c("train","test"), col=c("blue", "green"), lty=c(1,1))
+```
+
+```{r}
+pred_nn_tr <- predict(m_nn, X) %>% c()
+pred_nn <- predict(m_nn, X_test) %>% c()
+sub <- "keras_gs.csv"
+submit(pred_nn)
+```
+
+XGB
+```{r}
+tr_te_xgb <- tr_te %>% 
+  mutate_if(is.factor, as.integer) #%>% 
+  # glimpse()
+
+dtest <- xgb.DMatrix(data = data.matrix(tr_te_xgb[-tri, ]))
+tr_te_xgb <- tr_te_xgb[tri, ]
+idx <- ymd(tr$date[tri]) < ymd("20170701")
+dtr <- xgb.DMatrix(data = data.matrix(tr_te_xgb[idx, ]), label = log1p(y[tri][idx]))
+dval <- xgb.DMatrix(data = data.matrix(tr_te_xgb[!idx, ]), label = log1p(y[tri][!idx]))
+dtrain <- xgb.DMatrix(data = data.matrix(tr_te_xgb), label = log1p(y[tri]))
+cols <- colnames(tr_te_xgb)
+rm(tr_te_xgb); invisible(gc)
+
+p <- list(objective = "reg:linear",
+          booster = "gbtree",
+          eval_metric = "rmse",
+          nthread = 4,
+          eta = 0.05,
+          max_depth = 8,
+          min_child_weight = 3,
+          gamma = 0,
+          subsample = 0.8,
+          colsample_bytree = 0.5,
+          nrounds = 2000)
+
+set.seed(0)
+m_xgb <- xgb.train(p, dtr, p$nrounds, list(val = dval), print_every_n = 100, early_stopping_rounds = 100)
+
+# xgb.importance(cols, model = m_xgb) %>%
+#   xgb.plot.importance(top_n = 20)
+
+pred_xgb <- predict(m_xgb, dtest)
+pred_xgb[pred_xgb<0]=0
+sqrt(mean((log1p(y[-tri])-pred_xgb)^2))
+```
+
+```{r}
+sqrt(mean((log1p(y[-tri])-apply(cbind(pred_nn,pred_xgb), 1, mean))^2))
+```
+
+
+
+
+
+
+```{r}
+pred_xgb_tr <- predict(m_xgb, dtrain)
+pred_xgb <- predict(m_xgb, dtest) 
+sub <- "xgb_gs.csv"
+submit(pred_xgb)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

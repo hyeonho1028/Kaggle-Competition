@@ -1,0 +1,394 @@
+---
+title: "eda_02"
+author: "Hyeonho Lee"
+date: "2018년 9월 26일"
+output: html_document
+---
+
+
+```{r}
+library(caret)
+library(ggalluvial)
+library(xgboost)
+library(jsonlite)
+library(lubridate)
+library(knitr)
+library(Rmisc)
+library(scales)
+library(countrycode)
+library(highcharter)
+library(glmnet)
+library(keras)
+library(magrittr)
+library(tidyverse)
+# use_condaenv("r-tensorflow")
+```
+
+```{r}
+setwd("D:/kaggle_compitition/all")
+tr = read_csv("train.csv")
+te = read_csv("test.csv")
+```
+
+```{r}
+n <- Sys.time() #See how long this takes to run
+
+#JSON columns are "device", "geoNetwork", "totals", "trafficSource"
+tr_device <- paste("[", paste(train$device, collapse = ","), "]") %>% fromJSON(flatten = T)
+tr_geoNetwork <- paste("[", paste(train$geoNetwork, collapse = ","), "]") %>% fromJSON(flatten = T)
+tr_totals <- paste("[", paste(train$totals, collapse = ","), "]") %>% fromJSON(flatten = T)
+tr_trafficSource <- paste("[", paste(train$trafficSource, collapse = ","), "]") %>% fromJSON(flatten = T)
+
+te_device <- paste("[", paste(test$device, collapse = ","), "]") %>% fromJSON(flatten = T)
+te_geoNetwork <- paste("[", paste(test$geoNetwork, collapse = ","), "]") %>% fromJSON(flatten = T)
+te_totals <- paste("[", paste(test$totals, collapse = ","), "]") %>% fromJSON(flatten = T)
+te_trafficSource <- paste("[", paste(test$trafficSource, collapse = ","), "]") %>% fromJSON(flatten = T)
+
+
+#Check to see if the training and test sets have the same column names
+setequal(names(tr_device), names(te_device))
+setequal(names(tr_geoNetwork), names(te_geoNetwork))
+setequal(names(tr_totals), names(te_totals))
+setequal(names(tr_trafficSource), names(te_trafficSource))
+
+#As expected, tr_totals and te_totals are different as the train set includes the target, transactionRevenue
+names(tr_totals)
+names(te_totals)
+#Apparently tr_trafficSource contains an extra column as well - campaignCode
+#It actually has only one non-NA value, so this column can safely be dropped later
+table(tr_trafficSource$campaignCode, exclude = NULL)
+names(tr_trafficSource)
+names(te_trafficSource)
+
+
+#Combine to make the full training and test sets
+train <- train %>%
+    cbind(tr_device, tr_geoNetwork, tr_totals, tr_trafficSource) %>%
+    select(-device, -geoNetwork, -totals, -trafficSource)
+    
+test <- test %>%
+    cbind(te_device, te_geoNetwork, te_totals, te_trafficSource) %>%
+    select(-device, -geoNetwork, -totals, -trafficSource)
+
+#Number of columns in the new training and test sets. 
+ncol(train)
+ncol(test)
+
+#Remove temporary tr_ and te_ sets
+rm(tr_device); rm(tr_geoNetwork); rm(tr_totals); rm(tr_trafficSource)
+rm(te_device); rm(te_geoNetwork); rm(te_totals); rm(te_trafficSource)
+
+#How long did this script take?
+Sys.time() - n
+
+write.csv(train, "D:/kaggle_compitition/all/data/train_flat.csv", row.names = F)
+write.csv(test, "D:/kaggle_compitition/all/data/test_flat.csv", row.names = F)
+```
+
+```{r}
+setwd("D:/kaggle_compitition/all/data")
+tr = read_csv("train_flat.csv")
+te = read_csv("test_flat.csv")
+```
+
+```{r}
+flatten_json <- . %>% 
+  str_c(., collapse = ",") %>% 
+  str_c("[", ., "]") %>% 
+  fromJSON(flatten = T)
+
+parse <- . %>%
+  bind_cols(flatten_json(.$device)) %>%
+  bind_cols(flatten_json(.$geoNetwork)) %>%
+  bind_cols(flatten_json(.$trafficSource)) %>%
+  bind_cols(flatten_json(.$totals)) %>%
+  select(-device, -geoNetwork, -trafficSource, -totals)
+
+tr <- parse(tr)
+te <- parse(te)
+```
+
+```{r}
+setdiff(names(tr), names(te))
+```
+
+```{r}
+tr %<>% select(-one_of("campaignCode"))
+```
+
+```{r}
+fea_uniq_values <- sapply(tr, n_distinct)
+(fea_del <- names(fea_uniq_values[fea_uniq_values == 1]))
+```
+
+```{r}
+tr %<>% select(-one_of(fea_del))
+te %<>% select(-one_of(fea_del))
+```
+
+```{r}
+is_na_val <- function(x) x %in% c("not available in demo dataset", "(not provided)",
+                                  "(not set)", "<NA>", "unknown.unknown",  "(none)")
+
+tr %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+te %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+```
+
+```{r}
+y <- as.numeric(tr$transactionRevenue)
+tr$transactionRevenue <- NULL
+summary(y)
+```
+
+```{r}
+y[is.na(y)] <- 0
+summary(y)
+```
+
+```{r}
+m <- tr %>% 
+  mutate(date = ymd(date),
+         year = year(date),
+         month = month(date),
+         day = day(date),
+         hits = as.numeric(hits),
+         pageviews = as.numeric(pageviews),
+         bounces = as.numeric(bounces),
+         newVisits = as.numeric(newVisits),
+         isMobile = ifelse(isMobile, 1L, 0L),
+         isTrueDirect = ifelse(isMobile, 1L, 0L)) %>% 
+  mutate_all(funs(ifelse(is.na(.), 0, .))) %>% 
+  select(-date, -fullVisitorId, -visitId, -sessionId) %>% 
+  mutate_if(is.character, factor) %>% 
+  mutate_if(is.factor, fct_lump, prop = 0.01) %>% 
+  model.matrix(~ . - 1, .) %>% 
+  cor(y) %>% 
+  data.table::as.data.table(keep.rownames=TRUE) %>% 
+  set_names("Feature", "rho") %>% 
+  arrange(-rho) 
+
+m %>% 
+  ggplot(aes(x = rho)) +
+  geom_histogram(bins = 50, fill="steelblue") + 
+  labs(x = "correlation") +
+  theme_minimal()
+```
+
+```{r}
+m %>% 
+  filter(rho > 0.1) %>% 
+  kable()
+```
+
+```{r}
+grp_mean <- function(x, grp) ave(x, grp, FUN = function(x) mean(x, na.rm = TRUE))
+
+id <- te[, "fullVisitorId"]
+tri <- 1:nrow(tr)
+
+tr_te <- tr %>% 
+  bind_rows(te) %>% 
+  mutate(date = ymd(date),
+         year = year(date) %>% factor(),
+         month = year(date) %>% factor(),
+         week = week(date) %>% factor(),
+         day = day(date) %>% factor(),
+         hits = as.integer(hits),
+         pageviews = as.integer(pageviews),
+         bounces = as.integer(bounces),
+         newVisits = as.integer(newVisits),
+         isMobile = ifelse(isMobile, 1L, 0L),
+         isTrueDirect = ifelse(isTrueDirect, 1L, 0L),
+         adwordsClickInfo.isVideoAd = ifelse(!adwordsClickInfo.isVideoAd, 0L, 1L)) %>% 
+  select(-date, -fullVisitorId, -visitId, -sessionId) %>% 
+  mutate_if(is.character, factor) %>% 
+  mutate(pageviews_mean_vn = grp_mean(pageviews, visitNumber),
+         hits_mean_vn = grp_mean(hits, visitNumber),
+         pageviews_mean_country = grp_mean(pageviews, country),
+         hits_mean_country = grp_mean(hits, country),
+         pageviews_mean_city = grp_mean(pageviews, city),
+         hits_mean_city = grp_mean(hits, city)) %T>% 
+  glimpse()
+```
+
+```{r}
+submit <- . %>% 
+  as_tibble() %>% 
+  set_names("y") %>% 
+  mutate(y = ifelse(y < 0, 0, expm1(y))) %>% 
+  bind_cols(id) %>% 
+  group_by(fullVisitorId) %>% 
+  summarise(y = log1p(sum(y))) %>% 
+  right_join(
+    read_csv("D:/kaggle_compitition/all/sample_submission.csv"), 
+    by = "fullVisitorId") %>% 
+  mutate(PredictedLogRevenue = round(y, 5)) %>% 
+  select(-y) %>% 
+  write_csv(sub)
+```
+
+
+
+glmnet
+```{r}
+tr_te_ohe <- tr_te %>% 
+  mutate_if(is.factor, fct_lump, prop = 0.025) %>% 
+  mutate_if(is.numeric, funs(ifelse(is.na(.), 0L, .))) %>% 
+  mutate_if(is.factor, fct_explicit_na) %>% 
+  select(-adwordsClickInfo.isVideoAd) %>% 
+  model.matrix(~.-1, .) %>% 
+  scale() %>% 
+  round(4)
+
+X <- tr_te_ohe[tri, ]
+X_test <- tr_te_ohe[-tri, ]
+rm(tr_te_ohe); invisible(gc())
+```
+
+
+```{r}
+m_glm <- cv.glmnet(X, log1p(y), alpha = 0, family="gaussian", 
+                   type.measure = "mse", nfolds = 7)
+```
+
+```{r}
+pred_glm_tr <- predict(m_glm, X, s = "lambda.min") %>% c()
+pred_glm <- predict(m_glm, X_test, s = "lambda.min") %>% c()
+sub <- "glmnet_gs.csv"
+submit(pred_glm)
+```
+
+
+Keras
+```{r}
+m_nn <- keras_model_sequential()
+m_nn %>% 
+  layer_dense(units = 256, activation = "relu", input_shape = ncol(X)) %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.25) %>%
+  layer_dense(units = 1, activation = "linear")
+```
+
+```{r}
+m_nn %>% compile(loss = "mean_squared_error",
+                 metrics = custom_metric("rmse", function(y_true, y_pred) 
+                   k_sqrt(metric_mean_squared_error(y_true, y_pred))),
+                 optimizer = optimizer_adadelta())
+```
+
+```{r}
+history <- m_nn %>% 
+  fit(X, log1p(y), 
+      epochs = 50, 
+      batch_size = 128, 
+      verbose = 0, 
+      validation_split = 0.2,
+      callbacks = callback_early_stopping(patience = 5))
+```
+
+```{r}
+pred_nn_tr <- predict(m_nn, X) %>% c()
+pred_nn <- predict(m_nn, X_test) %>% c()
+sub <- "keras_gs.csv"
+submit(pred_nn)
+```
+
+
+XGB
+```{r}
+tr_te_xgb <- tr_te %>% 
+  mutate_if(is.factor, as.integer) %>% 
+  glimpse()
+```
+
+```{r}
+dtest <- xgb.DMatrix(data = data.matrix(tr_te_xgb[-tri, ]))
+tr_te_xgb <- tr_te_xgb[tri, ]
+idx <- ymd(tr$date) < ymd("20170701")
+dtr <- xgb.DMatrix(data = data.matrix(tr_te_xgb[idx, ]), label = log1p(y[idx]))
+dval <- xgb.DMatrix(data = data.matrix(tr_te_xgb[!idx, ]), label = log1p(y[!idx]))
+dtrain <- xgb.DMatrix(data = data.matrix(tr_te_xgb), label = log1p(y))
+cols <- colnames(tr_te_xgb)
+rm(tr_te_xgb); invisible(gc)
+```
+
+```{r}
+p <- list(objective = "reg:linear",
+          booster = "gbtree",
+          eval_metric = "rmse",
+          nthread = 4,
+          eta = 0.05,
+          max_depth = 8,
+          min_child_weight = 3,
+          gamma = 0,
+          subsample = 0.8,
+          colsample_bytree = 0.5,
+          nrounds = 2000)
+
+set.seed(0)
+m_xgb <- xgb.train(p, dtr, p$nrounds, list(val = dval), print_every_n = 100, early_stopping_rounds = 100)
+```
+
+```{r}
+xgb.importance(cols, model = m_xgb) %>% 
+  xgb.plot.importance(top_n = 20)
+```
+
+```{r}
+pred_xgb_tr <- predict(m_xgb, dtrain)
+pred_xgb <- predict(m_xgb, dtest) 
+sub <- "xgb_gs.csv"
+submit(pred_xgb)
+```
+
+RandomForest
+```{r}
+glimpse(tr_te)
+tr_te_rf <- tr_te %>% 
+  mutate_if(is.factor, as.integer) %>% 
+  glimpse()
+```
+
+```{r}
+randomForest::randomForest(X, log1p(y))
+
+
+```
+
+
+
+
+```{r}
+pred_avg <- pred_glm*0.2 + pred_nn*0.2 + pred_xgb*0.6
+pred_avg <- pred_glm + pred_nn + pred_xgb
+
+sub <- "avg_gs1.csv"
+submit(pred_avg)
+```
+
+
+
+```{r}
+hist(pred_glm)
+boxplot(pred_glm)
+
+tbl_df(pred_glm) %>% ggplot(aes(x = value)) + geom_density(fill = 'yellow', alpha=.5)+
+  geom_line(stat = 'density') + expand_limits(y=0) + ggtitle("glm_pred")
+
+tbl_df(pred_nn) %>% ggplot(aes(x = value)) + geom_density(fill = 'yellow', alpha=.5)+
+  geom_line(stat = 'density') + expand_limits(y=0) + ggtitle("nn_pred")
+
+tbl_df(pred_xgb) %>% ggplot(aes(x = value)) + geom_density(fill = 'yellow', alpha=.5)+
+  geom_line(stat = 'density') + expand_limits(y=0) + ggtitle("xgb_pred")
+```
+
+
+
+
+
+
+
+
+
+

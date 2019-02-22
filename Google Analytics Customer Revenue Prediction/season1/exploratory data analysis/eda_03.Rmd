@@ -1,0 +1,261 @@
+---
+title: "eda_03"
+author: "Hyeonho Lee"
+date: "2018년 9월 28일"
+output: html_document
+---
+
+```{r}
+setwd("D:/kaggle_compitition/all")
+tr = read_csv("train.csv")
+# te = read_csv("test.csv")
+```
+```{r}
+flatten_json <- . %>% 
+  str_c(., collapse = ",") %>% 
+  str_c("[", ., "]") %>% 
+  fromJSON(flatten = T)
+
+parse <- . %>%
+  bind_cols(flatten_json(.$device)) %>%
+  bind_cols(flatten_json(.$geoNetwork)) %>%
+  bind_cols(flatten_json(.$trafficSource)) %>%
+  bind_cols(flatten_json(.$totals)) %>%
+  select(-device, -geoNetwork, -trafficSource, -totals)
+
+tr <- parse(tr)
+te <- parse(te)
+```
+
+```{r}
+glimpse(tr)
+glimpse(te)
+```
+
+
+y exploratory - 미뤄
+```{r}
+# hist(as.numeric(tr$transactionRevenue))
+# hist(log1p(as.numeric(tr$transactionRevenue)))
+# median(as.numeric(tr$transactionRevenue), na.rm = T)
+
+tr$transactionRevenue %<>% as.numeric()
+tr$transactionRevenue[is.na(tr$transactionRevenue)] = 0
+# sum(is.na(tr$transactionRevenue))
+# glimpse(tr)
+```
+
+
+
+```{r}
+is_na_val <- function(x) x %in% c("not available in demo dataset", "(not provided)",
+                                  "(not set)", "<NA>", "unknown.unknown",  "(none)")
+
+tr %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+te %<>% mutate_all(funs(ifelse(is_na_val(.), NA, .)))
+# glimpse(tr)
+```
+
+```{r}
+setdiff(names(tr), names(te))
+
+tr %<>% select(-one_of("campaignCode"))
+```
+
+```{r}
+fea_uniq_values <- sapply(tr, n_distinct)
+(fea_del <- names(fea_uniq_values[fea_uniq_values == 1]))
+```
+
+```{r}
+tr %<>% select(-one_of(fea_del))
+te %<>% select(-one_of(fea_del))
+
+# table(tr$referralPath)
+# summary(as.numeric(tr$bounces))
+```
+
+```{r}
+glimpse(tr)
+```
+
+
+1. missing value exploratory
+```{r}
+data.table::data.table(
+  missing = sapply(tr, function(x) { (sum(is.na(x)) / length(x)) }),
+  column = names(tr)
+  ) %>% 
+  ggplot(aes(x = reorder(column, -missing), y = missing)) + 
+  geom_bar(stat = 'identity', fill = 'steelblue') + 
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(
+    title='Missing data by feature',
+    x='Feature',
+    y='% missing')
+```
+
+2. exploratory data analysis
+```{r}
+range(tr$date)
+
+tr$date %<>% as.character() %>% as.Date(format='%Y%m%d')
+```
+
+```{r}
+tbl_df(y) %>% ggplot(aes(x = value)) + geom_density(fill = 'yellow', alpha=.5)+
+  geom_line(stat = 'density') + expand_limits(y=0) + ggtitle("y") + xlim(c(0,.5))
+
+tbl_df(log1p(y)) %>% ggplot(aes(x = value)) + geom_density(fill = 'yellow', alpha=.5)+
+  geom_line(stat = 'density') + expand_limits(y=0) + ggtitle("log1p(y)")
+```
+
+```{r}
+(rev_range <- round(range(y, na.rm=TRUE), 2))
+```
+
+
+```{r}
+y %>% as.tibble() %>% 
+  ggplot(aes(x=log(value), y=..density..)) + 
+  geom_histogram(fill='steelblue', na.rm=TRUE, bins=40) + 
+  geom_density(aes(x=log(value)), fill='orange', color='orange', alpha=0.3, na.rm=TRUE) + 
+  labs(
+    title = 'Distribution of transaction revenue',
+    x = 'Natural log of transaction revenue'
+  )
+
+y %>% as.tibble() %>% 
+  ggplot(aes(x=log1p(value), y=..density..)) + 
+  geom_histogram(fill='steelblue', na.rm=TRUE, bins=40) + 
+  geom_density(aes(x=log1p(value)), fill='orange', color='orange', alpha=0.3, na.rm=TRUE) + 
+  labs(
+    title = 'Distribution of transaction revenue',
+    x = 'Natural log of transaction revenue'
+  )
+```
+
+```{r}
+g1 <- data.table::data.table(tr)[, .(n = .N), by=date] %>%
+  ggplot(aes(x=date, y=n)) + 
+  geom_line(color='steelblue') +
+  geom_smooth(color='orange') + 
+  labs(
+    x='',
+    y='Visits (000s)',
+    title='Daily visits'
+  )
+
+g2 <- data.table::data.table(cbind(tr,y))[, .(revenue = sum(y, na.rm=TRUE)), by=date] %>%
+  ggplot(aes(x=date, y=revenue)) + 
+  geom_line(color='steelblue') +
+  geom_smooth(color='orange') + 
+  labs(
+    x='',
+    y='Revenue (unit dollars)',
+    title='Daily transaction revenue'
+  )
+
+
+gridExtra::grid.arrange(g1, g2, nrow=2)
+```
+
+```{r}
+data.table::data.table(cbind(tr,y))[, .(revenue = sum(y, na.rm=TRUE)), by=channelGrouping] %>%
+  ggplot(aes(x=reorder(channelGrouping, -revenue), y=revenue)) + 
+  geom_bar(stat='identity', fill='steelblue') +
+  labs(x='Channel Grouping', 
+       y='Revenue (unit dollars)',
+       title='Distribution of revenue by channel grouping')
+```
+
+
+
+Device Features
+```{r}
+g1 <- data.table::data.table(tr)[, .(n=.N/1000), by=operatingSystem][
+  n > 0.001
+] %>%
+  ggplot(aes(x=reorder(operatingSystem, -n), y=n)) + 
+  geom_bar(stat='identity', fill='steelblue') +
+  labs(x='Operating System', 
+       y='# of visits in data set (000s)',
+       title='Distribution of visits by device operating system') + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+g2 <- data.table::data.table(tr)[, .(revenue = sum(transactionRevenue, na.rm=TRUE)), by=operatingSystem][
+  revenue > 0, 
+] %>%
+  ggplot(aes(x=reorder(operatingSystem, -revenue), y=revenue)) +
+  geom_bar(stat='identity', fill='steelblue') +
+  labs(x='Operating System',
+       y='Revenue (unit dollars)',
+       title='Distribution of revenue by device operating system') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+gridExtra::grid.arrange(g1, g2, nrow=2)
+```
+
+```{r}
+g1 <- data.table::data.table(tr)[, .(n=.N/1000), by=browser][
+  1:10
+] %>%
+  ggplot(aes(x=reorder(browser, -n), y=n)) + 
+  geom_bar(stat='identity', fill='steelblue') +
+  labs(x='Browser', 
+       y='# of visits in data set (000s)',
+       title='Distribution of visits by browser (Top 10 browsers)') + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+g2 <- data.table::data.table(tr)[, .(revenue = sum(transactionRevenue, na.rm=TRUE)/1000), by=browser][
+  1:10
+] %>%
+  ggplot(aes(x=reorder(browser, -revenue), y=revenue)) +
+  geom_bar(stat='identity', fill='steelblue') +
+  labs(x='Browser',
+       y='Revenue (dollars, 000s)',
+       title='Distribution of revenue by browser (top 10 browsers)') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+gridExtra::grid.arrange(g1, g2, nrow=2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
