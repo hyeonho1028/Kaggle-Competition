@@ -1,32 +1,6 @@
 # Kaggle Competition
 
-## My kaggle Competition
-
-#### [1. Google Analytics Customer Revenue Prediction](https://www.kaggle.com/c/ga-customer-revenue-prediction)
-
-​	- My kernel
-
-#### [2.Quora Insincere Questions Classification](https://www.kaggle.com/c/quora-insincere-questions-classification)
-
-​	- My kernel
-
-#### [3.Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic)
-
-​	- My kernel
-
-#### [4.2019 2nd ML month with KaKR](https://www.kaggle.com/c/2019-2nd-ml-month-with-kakr)
-
-​	- My kernel
-
-#### [5.Santander Customer Transaction Prediction](https://www.kaggle.com/c/santander-customer-transaction-prediction)
-
-​	- My kernel
-
-
-
-
-
-#### My Kaggle Study
+#### My kaggle
 1. 아이디어
 	1. 정리하기
 	2. 구현하기
@@ -88,5 +62,43 @@
 	5. 활발한 커뮤니티 사용을 해보자!
 
 
+## My kaggle Competition
 
+### [1. Google Analytics Customer Revenue Prediction](https://www.kaggle.com/c/ga-customer-revenue-prediction)
+
+### 기간
+2 months
+
+### Description
+The 80/20 rule has proven true for many businesses–only a small percentage of customers produce most of the revenue. As such, marketing teams are challenged to make appropriate investments in promotional strategies. 
+RStudio, the developer of free and open tools for R and enterprise-ready products for teams to scale and share work, has partnered with Google Cloud and Kaggle to demonstrate the business impact that thorough data analysis can have. 
+In this competition, you’re challenged to analyze a Google Merchandise Store (also known as GStore, where Google swag is sold) customer dataset to predict revenue per customer. Hopefully, the outcome will be more actionable operational changes and a better use of marketing budgets for those companies who choose to use data analysis on top of GA data.
+
+### [My Kernel](https://github.com/hyeonho1028/Kaggle_Competition/tree/master/Google%20Analytics%20Customer%20Revenue%20Prediction)
+
+### 최종결과
+1. submit count : 
+2. 등수 : /4111
+
+
+
+### [2.Quora Insincere Questions Classification](https://www.kaggle.com/c/quora-insincere-questions-classification)
+
+### 기간
+3 months
+
+### Description
+An existential problem for any major website today is how to handle toxic and divisive content. Quora wants to tackle this problem head-on to keep their platform a place where users can feel safe sharing their knowledge with the world.
+Quora is a platform that empowers people to learn from each other. On Quora, people can ask questions and connect with others who contribute unique insights and quality answers. A key challenge is to weed out insincere questions -- those founded upon false premises, or that intend to make a statement rather than look for helpful answers.
+In this competition, Kagglers will develop models that identify and flag insincere questions. To date, Quora has employed both machine learning and manual review to address this problem. With your help, they can develop more scalable methods to detect toxic and misleading content.
+Here's your chance to combat online trolls at scale. Help Quora uphold their policy of “Be Nice, Be Respectful” and continue to be a place for sharing and growing the world’s knowledge.
+
+### Important Note
+Be aware that this is being run as a Kernels Only Competition, requiring that all submissions be made via a Kernel output. Please read the Kernels FAQ and the data page very carefully to fully understand how this is designed.
+
+### 최종결과
+1. submit count : 
+2. 등수 : /4111
+
+### [3.미정]()
 
