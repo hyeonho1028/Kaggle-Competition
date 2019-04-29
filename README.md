@@ -4,28 +4,21 @@
 
 #### [1. Google Analytics Customer Revenue Prediction](https://www.kaggle.com/c/ga-customer-revenue-prediction)
 
-​	- My kernel
 
 #### [2.Quora Insincere Questions Classification](https://www.kaggle.com/c/quora-insincere-questions-classification)
 
-​	- My kernel
 
 #### [3.Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic)
 
-​	- My kernel
 
 #### [4.2019 2nd ML month with KaKR](https://www.kaggle.com/c/2019-2nd-ml-month-with-kakr)
 
-​	- My kernel
 
 #### [5.Santander Customer Transaction Prediction](https://www.kaggle.com/c/santander-customer-transaction-prediction)
 
-​	- My kernel
 
 
-
-
-
+---
 #### My Kaggle Study
 1. 아이디어
 	1. 정리하기
